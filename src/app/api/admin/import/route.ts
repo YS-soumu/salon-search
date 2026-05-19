@@ -7,38 +7,86 @@ function checkAdminAuth(req: NextRequest): boolean {
   return secret === process.env.ADMIN_SECRET;
 }
 
-// CSV パース（ヘッダー行あり）
-function parseCsv(text: string): Record<string, string>[] {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return [];
-
-  const headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
-  return lines.slice(1).map((line) => {
-    const values = line.split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
-    return Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""]));
-  });
+// Shift-JIS / UTF-8 自動判定デコード
+function decodeCsvBuffer(buffer: ArrayBuffer): string {
+  try {
+    const sjisText = new TextDecoder("shift-jis").decode(buffer);
+    // Shift-JIS デコード結果に日本語が含まれるか確認
+    if (/[ぁ-ん]|[ァ-ヴ]|[一-龯]/.test(sjisText)) return sjisText;
+  } catch {
+    // fall through
+  }
+  return new TextDecoder("utf-8").decode(buffer);
 }
 
-// CSVのヘッダー名 → DBフィールド名のマッピング
-// CSVのカラム名が異なる場合はここを調整してください
+// CSV パース（ヘッダー行あり・ダブルクォートで囲まれた改行にも対応）
+function parseCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let current = "";
+  let inQuote = false;
+  const chars = text.split("");
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (ch === '"') {
+      if (inQuote && chars[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuote = !inQuote;
+      }
+    } else if (ch === "," && !inQuote) {
+      if (!rows.length) rows.push([]);
+      rows[rows.length - 1].push(current.trim());
+      current = "";
+    } else if ((ch === "\n" || ch === "\r") && !inQuote) {
+      if (ch === "\r" && chars[i + 1] === "\n") i++;
+      if (!rows.length) rows.push([]);
+      rows[rows.length - 1].push(current.trim());
+      current = "";
+      rows.push([]);
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) {
+    if (!rows.length) rows.push([]);
+    rows[rows.length - 1].push(current.trim());
+  }
+
+  const filtered = rows.filter((r) => r.some((v) => v !== ""));
+  if (filtered.length < 2) return [];
+
+  const headers = filtered[0];
+  return filtered.slice(1).map((values) =>
+    Object.fromEntries(headers.map((h, i) => [h, values[i] ?? ""]))
+  );
+}
+
+// Bカート CSV の列名 → DB フィールド名マッピング
 const HEADER_MAP: Record<string, string> = {
+  // Bカート標準列名
+  "Bカート会員ID": "bcart_customer_id",
+  貴社独自会員ID: "bcart_customer_id",
+  会社名: "name",
+  郵便番号: "postal_code",
+  都道府県: "prefecture",
+  市区町村: "city",           // address と結合する
+  "町域・番地": "street",     // address と結合する
+  "ビル建物名など": "building",
+  電話番号: "phone",
+  携帯番号: "phone_mobile",
+  価格グループID: "customer_group_id",
+  // 汎用列名
   顧客ID: "bcart_customer_id",
-  customer_id: "bcart_customer_id",
   サロン名: "name",
   顧客名: "name",
-  name: "name",
-  郵便番号: "postal_code",
-  postal_code: "postal_code",
-  都道府県: "prefecture",
-  prefecture: "prefecture",
   住所: "address",
-  address: "address",
-  電話番号: "phone",
-  tel: "phone",
-  phone: "phone",
   グループID: "customer_group_id",
-  group_id: "customer_group_id",
 };
+
+// 対象グループIDでフィルタ（環境変数 BCART_TARGET_GROUP_ID が設定されている場合）
+const TARGET_GROUP_ID = process.env.BCART_TARGET_GROUP_ID ?? "";
 
 export async function POST(req: NextRequest) {
   if (!checkAdminAuth(req)) {
@@ -50,7 +98,8 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     if (!file) return NextResponse.json({ error: "file is required" }, { status: 400 });
-    csvText = await file.text();
+    const buffer = await file.arrayBuffer();
+    csvText = decodeCsvBuffer(buffer);
   } catch {
     return NextResponse.json({ error: "Failed to read file" }, { status: 400 });
   }
@@ -61,9 +110,15 @@ export async function POST(req: NextRequest) {
   }
 
   const db = createServiceClient();
-  const results = { created: 0, updated: 0, failed: 0, errors: [] as string[] };
+  const results = { created: 0, updated: 0, failed: 0, skipped: 0, errors: [] as string[] };
 
   for (const row of rows) {
+    // 削除フラグが立っている行をスキップ
+    if (row["削除フラグ"] === "1") {
+      results.skipped++;
+      continue;
+    }
+
     // ヘッダーを正規化
     const normalized: Record<string, string> = {};
     for (const [key, value] of Object.entries(row)) {
@@ -71,14 +126,33 @@ export async function POST(req: NextRequest) {
       if (mapped) normalized[mapped] = value;
     }
 
-    const name = normalized.name;
+    // 対象グループIDでフィルタ（設定されている場合のみ）
+    if (TARGET_GROUP_ID && normalized.customer_group_id !== TARGET_GROUP_ID) {
+      results.skipped++;
+      continue;
+    }
+
+    // 会社名が空の場合は代表者名を使用
+    const name =
+      normalized.name ||
+      `${row["代表者(姓)"] ?? ""}${row["代表者(名)"] ?? ""}`.trim();
+
     if (!name) {
       results.errors.push(`行スキップ: サロン名が空`);
       results.failed++;
       continue;
     }
 
-    const fullAddress = `${normalized.prefecture ?? ""}${normalized.address ?? ""}`;
+    // 住所を結合（市区町村 + 町域・番地 + ビル建物名）
+    const address =
+      normalized.address ||
+      [normalized.city, normalized.street, normalized.building]
+        .filter(Boolean)
+        .join("");
+
+    const phone = normalized.phone || normalized.phone_mobile || null;
+
+    const fullAddress = `${normalized.prefecture ?? ""}${address}`;
     let latitude: number | null = null;
     let longitude: number | null = null;
 
@@ -99,8 +173,8 @@ export async function POST(req: NextRequest) {
       name,
       postal_code: normalized.postal_code || null,
       prefecture: normalized.prefecture || null,
-      address: normalized.address || null,
-      phone: normalized.phone || null,
+      address: address || null,
+      phone,
       latitude,
       longitude,
       customer_group_id: normalized.customer_group_id || null,
