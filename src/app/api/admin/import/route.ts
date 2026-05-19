@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase";
 import { geocodeAddress } from "@/lib/geocoding";
 
+export const maxDuration = 60;
+
 function checkAdminAuth(req: NextRequest): boolean {
   const secret = req.headers.get("x-admin-secret");
   return secret === process.env.ADMIN_SECRET;
@@ -152,21 +154,9 @@ export async function POST(req: NextRequest) {
 
     const phone = normalized.phone || normalized.phone_mobile || null;
 
-    const fullAddress = `${normalized.prefecture ?? ""}${address}`;
-    let latitude: number | null = null;
-    let longitude: number | null = null;
-
-    if (fullAddress.trim()) {
-      try {
-        const geo = await geocodeAddress(fullAddress);
-        latitude = geo.lat;
-        longitude = geo.lng;
-        await new Promise((r) => setTimeout(r, 150));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        results.errors.push(`${name}: ジオコーディング失敗 - ${msg}`);
-      }
-    }
+    // ジオコーディングはインポート後に別途「住所変換」ボタンで実行
+    const latitude: number | null = null;
+    const longitude: number | null = null;
 
     const record = {
       bcart_customer_id: normalized.bcart_customer_id || null,

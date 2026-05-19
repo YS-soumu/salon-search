@@ -6,8 +6,10 @@ export default function AdminPage() {
   const [adminSecret, setAdminSecret] = useState("");
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [geocodeResult, setGeocodeResult] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function handleSync() {
@@ -50,13 +52,50 @@ export default function AdminPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setImportResult(
-        `インポート完了: 合計 ${data.total} 件 / 成功 ${data.created} 件 / 失敗 ${data.failed} 件` +
+        `インポート完了: 合計 ${data.total} 件 / 登録 ${data.created} 件 / スキップ ${data.skipped} 件 / 失敗 ${data.failed} 件\n` +
+        `※ 次に「住所→緯度経度変換」を実行してください` +
           (data.errors?.length ? `\n\nエラー詳細:\n${data.errors.join("\n")}` : "")
       );
     } catch (err) {
       setImportResult(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setImporting(false);
+    }
+  }
+
+  // 20件ずつ繰り返しジオコーディング
+  async function handleGeocodeAll() {
+    setGeocoding(true);
+    setGeocodeResult("変換中... しばらくお待ちください");
+    let total = 0;
+    let failed = 0;
+
+    try {
+      while (true) {
+        const res = await fetch("/api/admin/geocode-all", {
+          method: "POST",
+          headers: { "x-admin-secret": adminSecret },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        total += data.success ?? 0;
+        failed += data.failed ?? 0;
+        const remaining = data.remaining ?? 0;
+
+        setGeocodeResult(
+          `変換済み: ${total} 件 / 失敗: ${failed} 件 / 残り: ${remaining} 件`
+        );
+
+        if (remaining === 0) break;
+        // 次のバッチまで少し待つ
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      setGeocodeResult(`✅ 完了: 変換済み ${total} 件 / 失敗 ${failed} 件`);
+    } catch (err) {
+      setGeocodeResult(`エラー: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setGeocoding(false);
     }
   }
 
@@ -79,16 +118,13 @@ export default function AdminPage() {
             placeholder="ADMIN_SECRET に設定した値を入力"
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400"
           />
-          <p className="mt-2 text-xs text-gray-400">
-            この値は .env.local の ADMIN_SECRET と一致している必要があります
-          </p>
         </section>
 
         {/* Bカート同期 */}
         <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
           <h2 className="font-semibold text-gray-800 mb-1">Bカート API から同期</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Bカートから対象顧客グループのサロン情報を取得し、住所を緯度経度に変換してDBへ保存します。
+            Bカートから対象顧客グループのサロン情報を取得してDBへ保存します。
           </p>
           <button
             onClick={handleSync}
@@ -106,19 +142,10 @@ export default function AdminPage() {
 
         {/* CSV インポート */}
         <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <h2 className="font-semibold text-gray-800 mb-1">CSV ファイルからインポート</h2>
-          <p className="text-sm text-gray-500 mb-2">
-            Bカート API が使用できない場合は、CSV ファイルでサロン情報を登録できます。
+          <h2 className="font-semibold text-gray-800 mb-1">① CSV ファイルからインポート</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Bカートからエクスポートした CSV をそのままアップロードできます。
           </p>
-          <div className="bg-gray-50 rounded-lg p-3 mb-4">
-            <p className="text-xs font-medium text-gray-600 mb-1">CSVフォーマット（1行目はヘッダー）</p>
-            <code className="text-xs text-gray-700 block">
-              顧客ID,サロン名,郵便番号,都道府県,住所,電話番号,グループID
-            </code>
-            <code className="text-xs text-gray-500 block mt-1">
-              C001,サロンABC,150-0001,東京都,渋谷区神南1-1-1,03-1234-5678,G001
-            </code>
-          </div>
           <div className="flex flex-col sm:flex-row gap-3">
             <input
               ref={fileRef}
@@ -137,6 +164,27 @@ export default function AdminPage() {
           {importResult && (
             <pre className="mt-4 text-xs bg-gray-50 rounded-lg p-4 whitespace-pre-wrap text-gray-700">
               {importResult}
+            </pre>
+          )}
+        </section>
+
+        {/* 住所→緯度経度変換 */}
+        <section className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <h2 className="font-semibold text-gray-800 mb-1">② 住所→緯度経度変換</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            インポート後にこのボタンを押してください。住所から地図上の位置を計算します。<br />
+            件数が多い場合は数分かかります。完了まで画面を閉じないでください。
+          </p>
+          <button
+            onClick={handleGeocodeAll}
+            disabled={geocoding || !adminSecret}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium px-6 py-2.5 rounded-lg text-sm transition-colors"
+          >
+            {geocoding ? "変換中..." : "住所→緯度経度変換を実行"}
+          </button>
+          {geocodeResult && (
+            <pre className="mt-4 text-xs bg-gray-50 rounded-lg p-4 whitespace-pre-wrap text-gray-700">
+              {geocodeResult}
             </pre>
           )}
         </section>
