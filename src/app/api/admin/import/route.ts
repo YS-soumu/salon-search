@@ -134,13 +134,20 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // 会社名が空の場合は代表者名を使用
-    const name =
-      normalized.name ||
-      `${row["代表者(姓)"] ?? ""}${row["代表者(名)"] ?? ""}`.trim();
+    // サロン名（会社名）
+    const name = normalized.name || null;
 
-    if (!name) {
-      results.errors.push(`行スキップ: サロン名が空`);
+    // 担当者名（代表者 or 担当者）
+    const contact_name =
+      [
+        `${row["担当者(姓)"] ?? ""}${row["担当者(名)"] ?? ""}`.trim(),
+        `${row["代表者(姓)"] ?? ""}${row["代表者(名)"] ?? ""}`.trim(),
+      ].find((n) => n) || null;
+
+    // サロン名も担当者名も両方空の場合はスキップ
+    if (!name && !contact_name) {
+      const id = normalized.bcart_customer_id || `行${results.created + results.failed + results.skipped + 1}`;
+      results.errors.push(`スキップ [${id}]: サロン名・担当者名がどちらも空`);
       results.failed++;
       continue;
     }
@@ -154,19 +161,17 @@ export async function POST(req: NextRequest) {
 
     const phone = normalized.phone || normalized.phone_mobile || null;
 
-    // ジオコーディングはインポート後に別途「住所変換」ボタンで実行
-    const latitude: number | null = null;
-    const longitude: number | null = null;
-
     const record = {
       bcart_customer_id: normalized.bcart_customer_id || null,
       name,
+      contact_name,
       postal_code: normalized.postal_code || null,
       prefecture: normalized.prefecture || null,
       address: address || null,
       phone,
-      latitude,
-      longitude,
+      latitude: null,
+      longitude: null,
+      geocode_failed: false,
       customer_group_id: normalized.customer_group_id || null,
       is_active: true,
       updated_at: new Date().toISOString(),
@@ -177,7 +182,7 @@ export async function POST(req: NextRequest) {
       .upsert(record, { onConflict: "bcart_customer_id" });
 
     if (error) {
-      results.errors.push(`${name}: DB エラー - ${error.message}`);
+      results.errors.push(`${name ?? contact_name}: DB エラー - ${error.message}`);
       results.failed++;
     } else {
       results.created++;

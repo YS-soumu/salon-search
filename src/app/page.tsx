@@ -226,12 +226,16 @@ export default function SearchPage() {
 
 function SalonCard({ salon }: { salon: SalonWithDistance }) {
   const address = `${salon.prefecture ?? ""}${salon.address ?? ""}`;
+  const displayName = salon.name || salon.contact_name || "（名称未登録）";
 
   return (
     <li className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-gray-900 truncate">{salon.name}</h3>
+          <h3 className="font-semibold text-gray-900 truncate">{displayName}</h3>
+          {salon.name && salon.contact_name && (
+            <p className="text-xs text-gray-500 mt-0.5">担当: {salon.contact_name}</p>
+          )}
 
           {address && (
             <p className="mt-1 text-sm text-gray-600 flex items-start gap-1">

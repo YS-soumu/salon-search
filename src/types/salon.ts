@@ -1,7 +1,8 @@
 export interface Salon {
   id: number;
   bcart_customer_id: string | null;
-  name: string;
+  name: string | null;
+  contact_name: string | null;
   postal_code: string | null;
   prefecture: string | null;
   address: string | null;
