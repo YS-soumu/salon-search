@@ -69,6 +69,7 @@ export default function AdminPage() {
     setGeocodeResult("変換中... しばらくお待ちください");
     let total = 0;
     let failed = 0;
+    const allErrors: string[] = [];
 
     try {
       while (true) {
@@ -81,10 +82,12 @@ export default function AdminPage() {
 
         total += data.success ?? 0;
         failed += data.failed ?? 0;
+        if (data.errors?.length) allErrors.push(...data.errors);
         const remaining = data.remaining ?? 0;
 
         setGeocodeResult(
-          `変換済み: ${total} 件 / 失敗: ${failed} 件 / 残り: ${remaining} 件`
+          `変換済み: ${total} 件 / 失敗: ${failed} 件 / 残り: ${remaining} 件` +
+          (allErrors.length ? `\n\n失敗したサロン:\n${allErrors.join("\n")}` : "")
         );
 
         if (remaining === 0) break;
