@@ -27,26 +27,25 @@ async function geocodeWithGoogle(address: string): Promise<GeocodeResult> {
   };
 }
 
-// Nominatim (OpenStreetMap) — Google API キー未設定時のフォールバック
-async function geocodeWithNominatim(address: string): Promise<GeocodeResult> {
-  const url = new URL("https://nominatim.openstreetmap.org/search");
+// 国土地理院 ジオコーディングAPI（無料・登録不要・日本専用）
+async function geocodeWithGSI(address: string): Promise<GeocodeResult> {
+  const url = new URL("https://msearch.gsi.go.jp/address-search/AddressSearch");
   url.searchParams.set("q", address);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", "1");
-  url.searchParams.set("countrycodes", "jp");
 
-  const res = await fetch(url.toString(), {
-    headers: { "User-Agent": "SalonSearch/1.0" },
-  });
-  if (!res.ok) throw new Error(`Nominatim HTTP error: ${res.status}`);
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`GSI Geocode HTTP error: ${res.status}`);
 
   const data = await res.json();
-  if (!data.length) throw new Error("Nominatim: no results found");
+  if (!Array.isArray(data) || !data.length) {
+    throw new Error(`GSI: 住所が見つかりませんでした: ${address}`);
+  }
 
+  // GeoJSON 形式: coordinates は [longitude, latitude]
+  const [lng, lat] = data[0].geometry.coordinates;
   return {
-    lat: parseFloat(data[0].lat),
-    lng: parseFloat(data[0].lon),
-    formatted_address: data[0].display_name,
+    lat,
+    lng,
+    formatted_address: data[0].properties?.title ?? address,
   };
 }
 
@@ -54,6 +53,6 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult> {
   if (process.env.GOOGLE_MAPS_API_KEY) {
     return geocodeWithGoogle(address);
   }
-  // Google API キーが無ければ Nominatim を使用
-  return geocodeWithNominatim(address);
+  // Google API キー未設定時は国土地理院 API を使用
+  return geocodeWithGSI(address);
 }
