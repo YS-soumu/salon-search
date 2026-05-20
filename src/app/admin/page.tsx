@@ -11,6 +11,7 @@ export default function AdminPage() {
   const [importing, setImporting] = useState(false);
   const [geocoding, setGeocoding] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const stopGeocodeRef = useRef(false);
 
   async function handleSync() {
     setSyncing(true);
@@ -65,6 +66,7 @@ export default function AdminPage() {
 
   // 20件ずつ繰り返しジオコーディング
   async function handleGeocodeAll() {
+    stopGeocodeRef.current = false;
     setGeocoding(true);
     setGeocodeResult("変換中... しばらくお待ちください");
     let total = 0;
@@ -73,6 +75,14 @@ export default function AdminPage() {
 
     try {
       while (true) {
+        if (stopGeocodeRef.current) {
+          setGeocodeResult(
+            `⏹ 停止しました: 変換済み ${total} 件 / 失敗 ${failed} 件\n残りは次回「変換を実行」で続きから処理されます` +
+            (allErrors.length ? `\n\n失敗したサロン:\n${allErrors.join("\n")}` : "")
+          );
+          break;
+        }
+
         const res = await fetch("/api/admin/geocode-all", {
           method: "POST",
           headers: { "x-admin-secret": adminSecret },
@@ -90,16 +100,24 @@ export default function AdminPage() {
           (allErrors.length ? `\n\n失敗したサロン:\n${allErrors.join("\n")}` : "")
         );
 
-        if (remaining === 0) break;
-        // 次のバッチまで少し待つ
+        if (remaining === 0) {
+          setGeocodeResult(
+            `✅ 完了: 変換済み ${total} 件 / 失敗 ${failed} 件` +
+            (allErrors.length ? `\n\n失敗したサロン:\n${allErrors.join("\n")}` : "")
+          );
+          break;
+        }
         await new Promise((r) => setTimeout(r, 500));
       }
-      setGeocodeResult(`✅ 完了: 変換済み ${total} 件 / 失敗 ${failed} 件`);
     } catch (err) {
       setGeocodeResult(`エラー: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setGeocoding(false);
     }
+  }
+
+  function handleStopGeocode() {
+    stopGeocodeRef.current = true;
   }
 
   return (
@@ -178,13 +196,23 @@ export default function AdminPage() {
             インポート後にこのボタンを押してください。住所から地図上の位置を計算します。<br />
             件数が多い場合は数分かかります。完了まで画面を閉じないでください。
           </p>
-          <button
-            onClick={handleGeocodeAll}
-            disabled={geocoding || !adminSecret}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium px-6 py-2.5 rounded-lg text-sm transition-colors"
-          >
-            {geocoding ? "変換中..." : "住所→緯度経度変換を実行"}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleGeocodeAll}
+              disabled={geocoding || !adminSecret}
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium px-6 py-2.5 rounded-lg text-sm transition-colors"
+            >
+              {geocoding ? "変換中..." : "住所→緯度経度変換を実行"}
+            </button>
+            {geocoding && (
+              <button
+                onClick={handleStopGeocode}
+                className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium px-6 py-2.5 rounded-lg text-sm transition-colors"
+              >
+                ⏹ 停止
+              </button>
+            )}
+          </div>
           {geocodeResult && (
             <pre className="mt-4 text-xs bg-gray-50 rounded-lg p-4 whitespace-pre-wrap text-gray-700">
               {geocodeResult}
